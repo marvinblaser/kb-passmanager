@@ -950,36 +950,59 @@ function openQrImport(){
 async function startCam(){
   const status=document.getElementById('qri-status');
   try{
-    // iOS Safari requires exact constraints
     const constraints={video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false};
     qriStream=await navigator.mediaDevices.getUserMedia(constraints);
     const v=document.getElementById('qri-video');
     v.srcObject=qriStream;
-    v.setAttribute('playsinline','true'); // critical for iOS
+    v.setAttribute('playsinline','true');
+    v.setAttribute('muted','true');
     await v.play();
+    // Try native BarcodeDetector first (iOS 17+, Chrome Android, Safari 17+)
+    if('BarcodeDetector' in window){
+      try{
+        const formats=await BarcodeDetector.getSupportedFormats();
+        if(formats.includes('qr_code')){
+          status.textContent='Pointez vers le QR code…';
+          startScanNative();
+          return;
+        }
+      }catch(e){}
+    }
+    // Fallback: jsQR
     status.textContent='Chargement du lecteur QR…';
     await loadJsQr();
-    if(!window.jsQR){
-      status.textContent='⚠️ Erreur de chargement — rechargez la page et réessayez.';
-      return;
-    }
+    if(!window.jsQR){status.textContent='⚠️ Lecteur QR indisponible. Essayez Safari 17+ ou Chrome.';return;}
     status.textContent='Pointez vers le QR code…';
-    startScan();
+    startScanJsQr();
   }catch(err){
-    if(err.name==='NotAllowedError') status.textContent='⚠️ Permission caméra refusée. Allez dans Réglages → Safari → Caméra → Autoriser.';
-    else if(err.name==='NotFoundError') status.textContent='⚠️ Aucune caméra détectée.';
+    if(err.name==='NotAllowedError') status.textContent='⚠️ Permission refusée → Réglages → Safari → Caméra → Autoriser.';
     else status.textContent='⚠️ Erreur caméra : '+err.message;
   }
 }
+
+function startScanNative(){
+  const v=document.getElementById('qri-video');
+  const detector=new BarcodeDetector({formats:['qr_code']});
+  async function tick(){
+    if(!qriStream)return;
+    if(v.readyState===v.HAVE_ENOUGH_DATA&&v.videoWidth>0){
+      try{
+        const codes=await detector.detect(v);
+        if(codes.length>0) handleQrResult(codes[0].rawValue);
+      }catch(e){}
+    }
+    qriInterval=requestAnimationFrame(tick);
+  }
+  qriInterval=requestAnimationFrame(tick);
+}
+
 function loadJsQr(){
   return new Promise(resolve=>{
     if(window.jsQR){resolve();return;}
-    // Try jsdelivr as primary (more reliable on iOS)
     const s=document.createElement('script');
-    s.src='https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js';
+    s.src='https://raw.githubusercontent.com/cozmo/jsQR/master/dist/jsQR.js';
     s.onload=resolve;
     s.onerror=()=>{
-      // fallback to cdnjs
       const s2=document.createElement('script');
       s2.src='https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.min.js';
       s2.onload=resolve;s2.onerror=resolve;
@@ -988,22 +1011,20 @@ function loadJsQr(){
     document.head.appendChild(s);
   });
 }
-function startScan(){
+
+function startScanJsQr(){
   const v=document.getElementById('qri-video');
   const cv=document.getElementById('qri-canvas');
   const ctx=cv.getContext('2d',{willReadFrequently:true});
-  let lastAttempt=0;
   function tick(){
     if(!qriStream)return;
-    const now=Date.now();
-    if(now-lastAttempt>=150&&v.readyState===v.HAVE_ENOUGH_DATA&&v.videoWidth>0){
-      lastAttempt=now;
+    if(v.readyState===v.HAVE_ENOUGH_DATA&&v.videoWidth>0){
       cv.width=v.videoWidth;cv.height=v.videoHeight;
       ctx.drawImage(v,0,0,cv.width,cv.height);
       try{
         const img=ctx.getImageData(0,0,cv.width,cv.height);
         const code=window.jsQR(img.data,img.width,img.height,{inversionAttempts:'dontInvert'});
-        if(code)handleQrResult(code.data);
+        if(code) handleQrResult(code.data);
       }catch(e){}
     }
     qriInterval=requestAnimationFrame(tick);

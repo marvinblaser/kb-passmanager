@@ -948,31 +948,67 @@ function openQrImport(){
   startCam();
 }
 async function startCam(){
+  const status=document.getElementById('qri-status');
   try{
-    qriStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
-    const v=document.getElementById('qri-video');v.srcObject=qriStream;await v.play();
+    // iOS Safari requires exact constraints
+    const constraints={video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false};
+    qriStream=await navigator.mediaDevices.getUserMedia(constraints);
+    const v=document.getElementById('qri-video');
+    v.srcObject=qriStream;
+    v.setAttribute('playsinline','true'); // critical for iOS
+    await v.play();
+    status.textContent='Chargement du lecteur QR…';
     await loadJsQr();
+    if(!window.jsQR){
+      status.textContent='⚠️ Erreur de chargement — rechargez la page et réessayez.';
+      return;
+    }
+    status.textContent='Pointez vers le QR code…';
     startScan();
-  }catch{document.getElementById('qri-status').textContent='⚠️ Caméra non accessible. Vérifiez les permissions Safari.';}
+  }catch(err){
+    if(err.name==='NotAllowedError') status.textContent='⚠️ Permission caméra refusée. Allez dans Réglages → Safari → Caméra → Autoriser.';
+    else if(err.name==='NotFoundError') status.textContent='⚠️ Aucune caméra détectée.';
+    else status.textContent='⚠️ Erreur caméra : '+err.message;
+  }
 }
 function loadJsQr(){
   return new Promise(resolve=>{
     if(window.jsQR){resolve();return;}
+    // Try jsdelivr as primary (more reliable on iOS)
     const s=document.createElement('script');
-    s.src='https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.min.js';
-    s.onload=resolve;s.onerror=resolve;document.head.appendChild(s);
+    s.src='https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js';
+    s.onload=resolve;
+    s.onerror=()=>{
+      // fallback to cdnjs
+      const s2=document.createElement('script');
+      s2.src='https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.min.js';
+      s2.onload=resolve;s2.onerror=resolve;
+      document.head.appendChild(s2);
+    };
+    document.head.appendChild(s);
   });
 }
 function startScan(){
-  const v=document.getElementById('qri-video'),cv=document.getElementById('qri-canvas'),ctx=cv.getContext('2d');
-  qriInterval=setInterval(()=>{
-    if(!v.videoWidth)return;
-    cv.width=v.videoWidth;cv.height=v.videoHeight;
-    ctx.drawImage(v,0,0);
-    if(!window.jsQR)return;
-    const code=window.jsQR(ctx.getImageData(0,0,cv.width,cv.height).data,cv.width,cv.height);
-    if(code)handleQrResult(code.data);
-  },250);
+  const v=document.getElementById('qri-video');
+  const cv=document.getElementById('qri-canvas');
+  const ctx=cv.getContext('2d',{willReadFrequently:true});
+  let lastAttempt=0;
+  function tick(){
+    if(!qriStream)return;
+    const now=Date.now();
+    if(now-lastAttempt>=150&&v.readyState===v.HAVE_ENOUGH_DATA&&v.videoWidth>0){
+      lastAttempt=now;
+      cv.width=v.videoWidth;cv.height=v.videoHeight;
+      ctx.drawImage(v,0,0,cv.width,cv.height);
+      try{
+        const img=ctx.getImageData(0,0,cv.width,cv.height);
+        const code=window.jsQR(img.data,img.width,img.height,{inversionAttempts:'dontInvert'});
+        if(code)handleQrResult(code.data);
+      }catch(e){}
+    }
+    qriInterval=requestAnimationFrame(tick);
+  }
+  qriInterval=requestAnimationFrame(tick);
 }
 function handleQrResult(text){
   if(text===lastScan)return;lastScan=text;setTimeout(()=>{lastScan='';},1200);
@@ -1021,7 +1057,10 @@ async function doQrImport(){
     showToast(`${added} entrée(s) importée(s) ✓`);
   }catch{errEl.textContent='Mot de passe incorrect ou données corrompues ✗';}
 }
-function stopCam(){clearInterval(qriInterval);if(qriStream){qriStream.getTracks().forEach(t=>t.stop());qriStream=null;}}
+function stopCam(){
+  if(qriInterval){cancelAnimationFrame(qriInterval);qriInterval=null;}
+  if(qriStream){qriStream.getTracks().forEach(t=>t.stop());qriStream=null;}
+}
 function closeQrImport(){stopCam();closeOv('ov-qrimport');}
 
 async function confirmWipe(){
